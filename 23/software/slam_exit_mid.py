@@ -6,6 +6,8 @@ from astar_real import AStar
 from matplotlib.patches import Circle
 import numpy as np
 import matplotlib.patches as patches
+from robot_real import LidarRobot
+import time
 
 # --- 这些常量保持不变 ---
 CLOSE = 0.15
@@ -15,10 +17,13 @@ UNK = 9
 LIDAR_RANGE = 6.0
 PATH_COLOR = 'blue'
 GRID_LEN = 0.2
-THETA_ADD = 90
+THETA_ADD = -90
+PORT_NUM = 'COM6'
+BAUD_RATE = 9600
 
 class SLAM:
     def __init__(self, file='input2.json'):
+        self.robot=LidarRobot(port=PORT_NUM, baud_rate=BAUD_RATE, maze=Maze)
         # 假设 Maze 类能够读取 'start' 和 'exit'
         self.maze=Maze(file)
         self.robot=Robot(self.maze)
@@ -131,6 +136,7 @@ class SLAM:
         start_grid = self.robot.world_to_grid(self.robot.x, self.robot.y)
         stack.append(start_grid)
         visited.add(start_grid)
+        absolute_yaw = 0
 
         step = 0
         while stack and step < max_steps:
@@ -194,7 +200,54 @@ class SLAM:
                         
                 # 移动成功，更新状态和地图
                 step += 1
-                stack.append(best_neighbor)       
+                stack.append(best_neighbor) 
+                                # 将栅格坐标转换为世界坐标以计算精确角度
+                start_g = current_grid
+                target_g = best_neighbor
+                
+                # 计算从当前真实位置指向探索目标的向量的世界角度
+                target_angle_world = math.atan2(target_g[1] - start_g[1], target_g[0] - start_g[0]) # 相对于绝对坐标x轴，逆时针为正方向
+
+                # 计算目标方向与机器人当前朝向 (self.robot.theta) 的角度差
+                theta_1 = absolute_yaw + THETA_ADD - 270  #theta_1是偏离绝对x，正方向逆时针
+                if theta_1 < -180:
+                    theta_1 += 360
+                theta_1_rad = math.radians(theta_1)
+                angle_diff = target_angle_world - theta_1_rad # 角度差，正方向逆时针
+                
+                # 将角度差标准化到 [-pi, pi] 范围，以便于比较
+                angle_diff = (angle_diff + math.pi) % (2 * math.pi) - math.pi
+
+                # 根据角度差判断方向并调用 self.robot 的方法发送指令
+                if -math.pi / 4 <= angle_diff <= math.pi / 4:
+                    print(f"方向判断：前方 (角度差: {math.degrees(angle_diff):.1f}°)。发送前进指令。")
+                    self.robot.send_command('1') # 前进
+                    time.sleep(5)
+                elif math.pi / 4 < angle_diff < 3 * math.pi / 4:
+                    print(f"方向判断：左方 (角度差: {math.degrees(angle_diff):.1f}°)。发送左转、前进指令。")
+                    self.robot.send_command('2') # 左转
+                    absolute_yaw += 90
+                    absolute_yaw %= 360
+                    time.sleep(5)
+                    self.robot.send_command('1') # 前进
+                    time.sleep(5)
+                elif -3 * math.pi / 4 < angle_diff < -math.pi / 4:
+                    print(f"方向判断：右方 (角度差: {math.degrees(angle_diff):.1f}°)。发送右转、前进指令。")
+                    self.robot.send_command('3') # 右转
+                    absolute_yaw -= 90
+                    absolute_yaw %= 360
+                    time.sleep(5)
+                    self.robot.send_command('1') # 前进
+                    time.sleep(5)
+                else:
+                    print(f"方向判断：后方 (角度差: {math.degrees(angle_diff):.1f}°)。发送后退、前进指令。")
+                    self.robot.send_command('4') # 掉头
+                    absolute_yaw += 180
+                    absolute_yaw %= 360
+                    time.sleep(5)
+                    self.robot.send_command('1') # 前进
+                    time.sleep(5)
+                    # 判断小车坐标和角度是否符合预期（加纠错指令）      
                 visited.add(best_neighbor)
 
             else:
@@ -217,6 +270,7 @@ class SLAM:
         """
         任务主流程：先去终点，再返回起点。
         """
+        self.robot.connect_bluetooth()      
         print("任务开始...")
         
         # 确保maze对象已成功加载起点和终点
